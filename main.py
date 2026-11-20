@@ -52,7 +52,7 @@ def distinct_reads(case):
     kept = []
     previous = None
     for read in case['history']:
-        key = (read['players_tracked'], tuple(read['rates']))
+        key = (read['players_tracked'], tuple(read.get('rates') or ()))
         if not kept or key != previous:
             kept.append(read)
             previous = key
@@ -92,7 +92,10 @@ def count_forecasts(case, reads):
         obs = []
         last_rate = None
         for x, read in zip(xs, reads):
-            rate = read['rates'][i]
+            rates = read.get('rates') or ()
+            if i >= len(rates):
+                continue
+            rate = rates[i]
             if rate is not None:
                 obs.append((x, rate / 100.0 * read['players_tracked']))
                 last_rate = rate
@@ -135,7 +138,7 @@ def forecast_details(case):
     for before, after in zip(reads, reads[1:]):
         days = (parse_time(after['at']) - parse_time(before['at'])).total_seconds() / 86400.0
         scale = math.sqrt(max(days, 1.0 / 24.0))
-        for old, new in zip(before['rates'], after['rates']):
+        for old, new in zip(before.get('rates') or (), after.get('rates') or ()):
             if old is not None and new is not None:
                 volatility.append(abs(logit(new) - logit(old)) / scale)
     pooled_vol = math.sqrt(statistics.mean(v * v for v in volatility)) if volatility else 0.0
@@ -157,6 +160,7 @@ def forecast_details(case):
         quantiles = []
         for z in zs:
             value = round4(inv_logit(logit(median) + z * sigma))
+            value = clamp(value, 0.0, 100.0)
             quantiles.append(max(quantiles[-1] if quantiles else 0.0, value))
         rows.append({'id': trophy['id'], 'q': quantiles})
     return {'trophies': rows}, sigmas, medians
