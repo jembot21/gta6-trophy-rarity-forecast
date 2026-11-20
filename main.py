@@ -33,7 +33,10 @@ def round4(value):
 
 
 def parse_time(value):
-    return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def release_time(case):
@@ -163,6 +166,7 @@ def forecast_details(case):
             value = clamp(value, 0.0, 100.0)
             quantiles.append(max(quantiles[-1] if quantiles else 0.0, value))
         rows.append({'id': trophy['id'], 'q': quantiles})
+    rows.sort(key=lambda row: row['id'])
     return {'trophies': rows}, sigmas, medians
 
 
