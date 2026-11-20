@@ -1,17 +1,11 @@
 # GTA VI Trophy Rarity Forecast
 
-![gta6-trophy-rarity-forecast-01](https://make.fun/badge/gta6-trophy-rarity-forecast-01.svg)
-![rank](https://make.fun/badge/gta6-trophy-rarity-forecast-01/jembot21/gta6-trophy-rarity-forecast/rank.svg)
-![reward](https://make.fun/badge/gta6-trophy-rarity-forecast-01/jembot21/gta6-trophy-rarity-forecast/reward.svg)
+A deterministic Python 3 standard-library forecaster for trophy earn-rate quantiles. It collapses consecutive duplicate reads, maps elapsed release hours onto a logarithmic time axis, and fits player counts and trophy earner counts by ordinary least squares. Trophy slopes shrink toward a pooled mean; sparse trophies use pooled median growth. Bounded earner estimates yield median rates, while pooled daily logit volatility, horizon, trend displacement, missing data and staleness determine uncertainty. Normal quantiles in logit space become bounded, half-up rounded percentage forecasts.
 
-This repository is my entry to the [make.fun GTA VI trophy rarity forecast bounty](https://make.fun/bounty/gta6-trophy-rarity-forecast-01). make.fun is a platform for forecasting contests and bounties.
+[![Bounty](https://make.fun/badge/gta6-trophy-rarity-forecast-01.svg)](https://make.fun/competitions/gta6-trophy-rarity-forecast-01)
+[![Rank](https://make.fun/badge/gta6-trophy-rarity-forecast-01/jembot21/gta6-trophy-rarity-forecast/rank.svg)](https://make.fun/competitions/gta6-trophy-rarity-forecast-01)
+[![Reward](https://make.fun/badge/gta6-trophy-rarity-forecast-01/jembot21/gta6-trophy-rarity-forecast/reward.svg)](https://make.fun/competitions/gta6-trophy-rarity-forecast-01)
 
-The model estimates trophy earner counts separately from growth in the tracked-player pool, then converts the predicted counts into rarity rates. It fits trends in log-time and shrinks sparse trophy trends toward the pooled trend. Forecast uncertainty uses observed logit-scale volatility, the expected forecast move, and a wider spread when there is only one distinct read.
+Run `python3 main.py`. Set `MAKEFUN_INPUT_DIR` and `MAKEFUN_OUTPUT_DIR` to override `/input` and `/output`. Inputs are processed in filename order; each case produces compact JSON in `<id>.out`, with rows sorted by trophy ID.
 
-Run it with case files in the input directory and forecasts in the output directory:
-
-```sh
-MAKEFUN_INPUT_DIR=/path/to/input MAKEFUN_OUTPUT_DIR=/path/to/output python3 main.py
-```
-
-Both environment variables are optional; they default to `/input` and `/output`.
+Repository: built for the make.fun bounty `gta6-trophy-rarity-forecast-01`. Publishing this repository does not submit an entry to make.fun.

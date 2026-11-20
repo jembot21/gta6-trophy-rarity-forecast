@@ -1,185 +1,150 @@
-"""Deterministic trophy rarity forecasts from tracked players and earner counts.
-
-Python 3.10+, standard library only. Input and output directories are selected
-by MAKEFUN_INPUT_DIR and MAKEFUN_OUTPUT_DIR, defaulting to /input and /output.
-"""
+"""Standard-library deterministic trophy earn-rate quantile forecasts."""
 
 import json
 import math
 import os
-from pathlib import Path
-import statistics
 from datetime import datetime, timezone
+from pathlib import Path
+from statistics import NormalDist, mean, median
 
 
-def clamp(value, low=0.01, high=99.99):
-    return min(high, max(low, value))
+def clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def timestamp(value):
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
 def logit(rate):
-    rate = clamp(rate)
-    return math.log(rate / (100.0 - rate))
+    p = clamp(rate, 0.01, 99.99) / 100
+    return math.log(p) - math.log1p(-p)
 
 
-def inv_logit(value):
-    if value >= 0:
-        return 100.0 / (1.0 + math.exp(-value))
-    exp_value = math.exp(value)
-    return 100.0 * exp_value / (1.0 + exp_value)
+def inv_logit(v):
+    if v >= 0:
+        return 100 / (1 + math.exp(-v))
+    e = math.exp(v)
+    return 100 * e / (1 + e)
 
 
-def round4(value):
-    return math.floor(value * 10000.0 + 0.5) / 10000.0
+def round4(v):
+    return math.floor(v * 10000 + 0.5) / 10000
 
 
-def parse_time(value):
-    parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
+def rates(read):
+    value = read.get("rates")
+    return value if isinstance(value, list) else []
 
 
-def release_time(case):
-    return datetime.combine(
-        datetime.fromisoformat(case['game']['release_date']).date(),
-        datetime.min.time(), tzinfo=timezone.utc,
-    )
-
-
-def time_x(timestamp, release):
-    hours = (parse_time(timestamp) - release).total_seconds() / 3600.0
-    return math.log1p(max(hours, 0.0))
+def rate_at(read, i):
+    values = rates(read)
+    return values[i] if i < len(values) else None
 
 
 def distinct_reads(case):
-    kept = []
-    previous = None
-    for read in case['history']:
-        key = (read['players_tracked'], tuple(read.get('rates') or ()))
-        if not kept or key != previous:
+    kept, previous = [], None
+    for read in case.get("history", []):
+        key = (read["players_tracked"], tuple(rates(read)))
+        if key != previous:
             kept.append(read)
             previous = key
     return kept
 
 
-def load_case(path):
-    return json.loads(path.read_text(encoding='utf-8'))
-
-
 def slope(points):
-    mean_x = statistics.mean(x for x, _ in points)
-    mean_y = statistics.mean(y for _, y in points)
-    denominator = sum((x - mean_x) ** 2 for x, _ in points)
-    if denominator == 0:
-        return 0.0
-    return sum((x - mean_x) * (y - mean_y) for x, y in points) / denominator
-
-
-def count_forecasts(case, reads):
-    release = release_time(case)
-    xs = [time_x(read['at'], release) for read in reads]
-    target_x = time_x(case['target'], release)
-    players = [read['players_tracked'] for read in reads]
-    last_players = players[-1]
-    predicted_players = last_players
-    if len(set(players)) >= 2:
-        points = list(zip(xs, players))
-        b = slope(points)
-        a = statistics.mean(players) - b * statistics.mean(xs)
-        predicted_players = clamp(a + b * target_x, last_players, 50 * last_players)
-
-    observations = []
-    last_rates = []
-    slopes = []
-    for i in range(len(case['trophies'])):
-        obs = []
-        last_rate = None
-        for x, read in zip(xs, reads):
-            rates = read.get('rates') or ()
-            if i >= len(rates):
-                continue
-            rate = rates[i]
-            if rate is not None:
-                obs.append((x, rate / 100.0 * read['players_tracked']))
-                last_rate = rate
-        observations.append(obs)
-        last_rates.append(last_rate)
-        slopes.append(slope(obs) if len(obs) >= 3 else None)
-
-    fitted_slopes = [b for b in slopes if b is not None]
-    pooled_slope = statistics.mean(fitted_slopes) if fitted_slopes else 0.0
-    fits = []
-    growth = []
-    for obs, b in zip(observations, slopes):
-        if b is None:
-            fits.append(None)
-            continue
-        weight = len(obs) / (len(obs) + 0.25)
-        shrunk = weight * b + (1.0 - weight) * pooled_slope
-        fitted = obs[-1][1] + shrunk * (target_x - obs[-1][0])
-        fits.append(fitted)
-        last_count = obs[-1][1]
-        growth.append(clamp(fitted / last_count - 1.0, 0.0, 3.0)
-                      if last_count else 0.0)
-    pooled_growth = statistics.median(growth) if growth else 0.0
-    medians = []
-    for obs, fitted in zip(observations, fits):
-        if not obs:
-            medians.append(0.01)
-            continue
-        last_count = obs[-1][1]
-        estimate = fitted if fitted is not None else last_count * (1 + pooled_growth)
-        estimate = clamp(estimate, last_count, predicted_players)
-        medians.append(clamp(100.0 * estimate / predicted_players))
-    return medians, last_rates
+    mx = mean(x for x, _ in points)
+    my = mean(y for _, y in points)
+    denominator = sum((x - mx) ** 2 for x, _ in points)
+    return sum((x - mx) * (y - my) for x, y in points) / denominator if denominator else 0.0
 
 
 def forecast_details(case):
     reads = distinct_reads(case)
-    medians, last_rates = count_forecasts(case, reads)
-    volatility = []
-    for before, after in zip(reads, reads[1:]):
-        days = (parse_time(after['at']) - parse_time(before['at'])).total_seconds() / 86400.0
-        scale = math.sqrt(max(days, 1.0 / 24.0))
-        for old, new in zip(before.get('rates') or (), after.get('rates') or ()):
-            if old is not None and new is not None:
-                volatility.append(abs(logit(new) - logit(old)) / scale)
-    pooled_vol = math.sqrt(statistics.mean(v * v for v in volatility)) if volatility else 0.0
-    amplitude = clamp(pooled_vol, 0.35, 0.45)
-    days = case['horizon_minutes'] / 1440.0
+    release = timestamp(case["game"]["release_date"].split("T")[0])
+
+    def axis(at):
+        hours = (timestamp(at) - release).total_seconds() / 3600
+        # Preserve pre-release reads within the logarithm's valid domain.
+        # Earlier malformed dates saturate just above its singularity.
+        return math.log1p(max(-1.0 + 1e-12, hours))
+
+    xs = [axis(read["at"]) for read in reads]
+    target_x = axis(case["target"])
+    last_players = reads[-1]["players_tracked"] if reads else 0
+    players = last_players
+    if len({r["players_tracked"] for r in reads}) >= 2:
+        points = list(zip(xs, (r["players_tracked"] for r in reads)))
+        fitted = mean(y for _, y in points) + slope(points) * (target_x - mean(xs))
+        players = clamp(fitted, last_players, 50 * last_players)
+    observations, slopes = [], []
+    for i in range(len(case["trophies"])):
+        points = [(x, rate_at(r, i) / 100 * r["players_tracked"])
+                  for x, r in zip(xs, reads) if rate_at(r, i) is not None]
+        observations.append(points)
+        slopes.append(slope(points) if len(points) >= 3 else None)
+    fitted_slopes = [b for b in slopes if b is not None]
+    pooled = mean(fitted_slopes) if fitted_slopes else 0.0
+    estimates, growth = [], []
+    for points, b in zip(observations, slopes):
+        estimate = None
+        if b is not None:
+            w = len(points) / (len(points) + 0.25)
+            shrunk = w * b + (1 - w) * pooled
+            last_x, last_earners = points[-1]
+            estimate = last_earners + shrunk * (target_x - last_x)
+            if last_earners > 0:
+                growth.append(clamp(estimate / last_earners - 1, 0, 3))
+        estimates.append(estimate)
+    pooled_growth = median(growth) if growth else 0.0
+    changes = []
+    for old, new in zip(reads, reads[1:]):
+        days = (timestamp(new["at"]) - timestamp(old["at"])).total_seconds() / 86400
+        for i in range(len(case["trophies"])):
+            a, b = rate_at(old, i), rate_at(new, i)
+            if a is not None and b is not None:
+                changes.append(abs(logit(b) - logit(a)) / math.sqrt(max(days, 1 / 24)))
+    vol = math.sqrt(mean(v * v for v in changes)) if changes else 0.0
+    amplitude = clamp(vol, 0.35, 0.45)
+    days = max(0.0, case["horizon_minutes"] / 1440)
     stale = 0.35 if len(reads) < 2 else 0.0
-    sigmas = []
-    rows = []
-    normal = statistics.NormalDist()
-    zs = [normal.inv_cdf(level) for level in case['levels']]
-    for trophy, median, last_rate in zip(case['trophies'], medians, last_rates):
-        if last_rate is None:
-            sigma = 2.0
-        else:
-            move = abs(logit(median) - logit(last_rate))
-            sigma = max(0.05, math.sqrt(amplitude ** 2 * days +
-                                       (0.5 * move) ** 2 + stale ** 2 * days))
-        sigmas.append(sigma)
+    zs = [NormalDist().inv_cdf(level) for level in case["levels"]]
+    rows, sigmas, medians = [], [], []
+    for i, trophy in enumerate(case["trophies"]):
+        points = observations[i]
+        center = 0.01
+        if points and players > 0:
+            last_earners = points[-1][1]
+            estimate = estimates[i]
+            if estimate is None:
+                estimate = last_earners * (1 + pooled_growth)
+            center = clamp(100 * clamp(estimate, last_earners, players) / players, 0.01, 99.99)
+        last_rate = rate_at(reads[-1], i) if reads else None
+        sigma = 2.0 if last_rate is None else max(0.05, math.sqrt(
+            amplitude ** 2 * days + (0.5 * abs(logit(center) - logit(last_rate))) ** 2
+            + stale ** 2 * days))
         quantiles = []
         for z in zs:
-            value = round4(inv_logit(logit(median) + z * sigma))
-            value = clamp(value, 0.0, 100.0)
-            quantiles.append(max(quantiles[-1] if quantiles else 0.0, value))
-        rows.append({'id': trophy['id'], 'q': quantiles})
-    rows.sort(key=lambda row: row['id'])
-    return {'trophies': rows}, sigmas, medians
+            q = clamp(round4(inv_logit(logit(center) + z * sigma)), 0, 100)
+            quantiles.append(max(q, quantiles[-1] if quantiles else 0))
+        rows.append({"id": trophy["id"], "q": quantiles})
+        sigmas.append(sigma)
+        medians.append(center)
+    rows.sort(key=lambda row: row["id"])
+    return {"trophies": rows}, sigmas, medians
 
 
 def main():
-    input_dir = Path(os.environ.get('MAKEFUN_INPUT_DIR', '/input'))
-    output_dir = Path(os.environ.get('MAKEFUN_OUTPUT_DIR', '/output'))
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for path in sorted(input_dir.glob('*.in')):
-        case = load_case(path)
-        output, _, _ = forecast_details(case)
-        payload = json.dumps(output, separators=(',', ':'), allow_nan=False) + '\n'
-        (output_dir / (str(case['id']) + '.out')).write_text(payload, encoding='utf-8')
+    source = Path(os.environ.get("MAKEFUN_INPUT_DIR", "/input"))
+    destination = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
+    destination.mkdir(parents=True, exist_ok=True)
+    for path in sorted(source.glob("*.in")):
+        case = json.loads(path.read_text(encoding="utf-8"))
+        result, _, _ = forecast_details(case)
+        encoded = json.dumps(result, separators=(",", ":"), allow_nan=False) + "\n"
+        (destination / (str(case["id"]) + ".out")).write_text(encoded, encoding="utf-8")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
